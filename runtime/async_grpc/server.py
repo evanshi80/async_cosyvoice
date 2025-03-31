@@ -24,6 +24,7 @@ import torch
 import cosyvoice_pb2
 import cosyvoice_pb2_grpc
 import logging
+
 import grpc
 from grpc import aio
 
@@ -35,6 +36,65 @@ from async_cosyvoice.runtime.async_grpc.utils import convert_audio_tensor_to_byt
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
+
+
+import os
+import shutil
+import subprocess
+
+model_repo_url = "https://www.modelscope.cn/iic/CosyVoice2-0.5B.git"  # 替换为真实的 Git 仓库地址
+cache_dir = os.path.expanduser("~/.cache/cosyvoice_0.5b")
+link_path = "./pretrained_models/CosyVoice2-0.5B"  # 软链接路径
+version_record_file = f"{cache_dir}/._model_version"
+config_src = "./async_cosyvoice/CosyVoice2-0.5B"  # 本地配置文件源目录
+
+# 克隆模型（如果未存在）
+if not os.path.exists(cache_dir):
+    print(f"🔄 模型目录不存在，开始用 git lfs 克隆: {model_repo_url}")
+    subprocess.run(["git", "clone", model_repo_url, cache_dir], check=True)
+else:
+    print("✅ 模型目录已存在，跳过克隆。")
+
+# 记录当前 HEAD 的 commit hash
+def get_git_commit_hash(repo_dir):
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+current_commit = get_git_commit_hash(cache_dir)
+
+# 判断是否需要更新软链接
+need_symlink_update = not os.path.islink(link_path) or os.readlink(link_path) != cache_dir
+
+# 判断模型是否首次下载或有更新（commit hash 变了）
+last_model_hash = None
+if os.path.exists(version_record_file):
+    with open(version_record_file, 'r') as f:
+        last_model_hash = f.read().strip()
+
+model_updated = (last_model_hash != current_commit)
+
+# 更新软链接
+if need_symlink_update:
+    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    if os.path.exists(link_path):
+        os.unlink(link_path) if os.path.islink(link_path) else shutil.rmtree(link_path)
+    os.symlink(cache_dir, link_path)
+
+# 如果模型更新了，拷贝配置
+if model_updated:
+    for filename in os.listdir(config_src):
+        src_path = os.path.join(config_src, filename)
+        dst_path = os.path.join(cache_dir, filename)
+        shutil.copy2(src_path, dst_path)
+    print(f"✅ 模型更新或首次下载，已拷贝配置文件到: {cache_dir}")
+    with open(version_record_file, 'w') as f:
+        f.write(current_commit)
+else:
+    print("✅ 模型未变，跳过配置文件拷贝。")
+
 
 
 class CosyVoiceServiceImpl(cosyvoice_pb2_grpc.CosyVoiceServicer):
@@ -244,7 +304,7 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=50000)
     parser.add_argument('--max_conc', type=int, default=4)
     parser.add_argument('--model_dir', type=str,
-                        default='../../../pretrained_models/CosyVoice2-0.5B',
+                        default=link_path,
                         help='local path or modelscope repo id')
     parser.add_argument('--load_jit', action='store_true', help='load jit model')
     parser.add_argument('--load_trt', action='store_true', help='load tensorrt model')

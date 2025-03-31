@@ -157,8 +157,8 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', type=str, default='0.0.0.0')
-    parser.add_argument('--port', type=int, default=50000)
+    parser.add_argument('--host', type=str, default='69.30.85.187')
+    parser.add_argument('--port', type=int, default=22189)
     parser.add_argument('--mode', default='zero_shot_by_spk_id',
                         choices=['sft', 'zero_shot', 'cross_lingual', 'instruct2',
                                  'instruct2_by_spk_id', 'zero_shot_by_spk_id'],
