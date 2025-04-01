@@ -26,7 +26,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from cosyvoice.flow.flow import CausalMaskedDiffWithXvec
-from cosyvoice.flow.flow_matching import EstimatorWrapper
+# from cosyvoice.flow.flow_matching import EstimatorWrapper
 from cosyvoice.hifigan.generator import HiFTGenerator
 from cosyvoice.utils.common import fade_in_out
 from cosyvoice.utils.file_utils import convert_onnx_to_trt
@@ -54,6 +54,25 @@ class AsyncWrapper:
 
 def tensor_to_list(tensor: torch.tensor):
     return tensor.view(-1).cpu().numpy().tolist()
+
+class EstimatorWrapper:
+    def __init__(self, estimator_engine, estimator_count=2,):
+        self.estimators = queue.Queue()
+        self.estimator_engine = estimator_engine
+        for _ in range(estimator_count):
+            estimator = estimator_engine.create_execution_context()
+            if estimator is not None:
+                self.estimators.put(estimator)
+
+        if self.estimators.empty():
+            raise Exception("No available estimator")
+
+    def acquire_estimator(self):
+        return self.estimators.get(), self.estimator_engine
+
+    def release_estimator(self, estimator):
+        self.estimators.put(estimator)
+        return
 
 
 class CosyVoice2Model:
