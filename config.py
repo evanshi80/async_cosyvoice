@@ -27,9 +27,24 @@ SAMPLING_PARAMS = {
     "output_kind": RequestOutputKind.DELTA  # 设置为DELTA，如调整该参数，请同时调整llm_inference的处理代码
 }
 
+# 设置frontend中 ZhNormalizer 的 overwrite_cache 参数
+# 首次运行时，需要设置 True 正确生成缓存，避免 frontend 过滤掉儿化音。
+# 后续可以设置为 False 可避免后续运行时重复生成。
+OVERWRITE_NORMALIZER_CACHE = True
+
+# 限制 estimator 内存方法  由 @hexisyztem 提供
+# 原本代码编译后的flow trt模型 显存占用4.6G过大，修改为 1.6G，便于启动多个 estimator 实例，并发推理。
+# 修改 cosyvoice/utils/file_utils.py:64
+#     # config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 33)  # 8GB
+#     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB
+# 删除已经编译的模型./pretrained_models/CosyVoice2-0.5B/flow.decoder.estimator.fp16.mygpu.plan
+# 重新运行服务器代码  --trt 将重新编译模型，到时将生成新的模型，并单个 estimator 只占用 1.6GB 显存
+# 根据GPU显存大小量及性能设置合适的 ESTIMATOR_COUNT
+ESTIMATOR_COUNT = 2
+
 # 编写一个代码检查是否有 private_config.py 文件，如果有则读取该文件，并【完全】覆盖ENGINE_ARGS 和 SAMPLING_PARAMS 的值
 try:
-    from async_cosyvoice.private_config import ENGINE_ARGS, SAMPLING_PARAMS
+    from async_cosyvoice.private_config import *
     import logging
     logging.info("Loaded private_config.py")
 except ImportError:

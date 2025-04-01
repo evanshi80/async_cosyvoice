@@ -13,16 +13,17 @@
 # limitations under the License.
 import os
 import time
-from typing import Generator, Optional, Union, AsyncGenerator
-from tqdm import tqdm
+from typing import Generator, Union, AsyncGenerator
+os.environ["VLLM_USE_V1"] = '1'
+
+import torch
+from async_cosyvoice.frontend import CosyVoiceFrontEnd
+from async_cosyvoice.model import CosyVoice2Model
+from cosyvoice.utils.file_utils import logging
 from hyperpyyaml import load_hyperpyyaml
 from modelscope import snapshot_download
-import torch
+from tqdm import tqdm
 
-from cosyvoice.utils.file_utils import logging
-
-from async_cosyvoice.model import CosyVoice2Model
-from async_cosyvoice.frontend import CosyVoiceFrontEnd
 
 class AsyncCosyVoice2:
     def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False):

@@ -11,21 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import re
+import json
+import inflect
 from functools import partial
 from collections import OrderedDict
-from typing import Generator, Optional, AsyncGenerator, Union
-import json
+from typing import Generator, Optional, AsyncGenerator, Union, Callable
+
+import librosa
 import onnxruntime
 import torch
 import numpy as np
 import whisper
-from typing import Callable
-import torchaudio.compliance.kaldi as kaldi
 import torchaudio
-import os
-import re
-import inflect
+import torchaudio.compliance.kaldi as kaldi
+
 from pydantic import BaseModel, ConfigDict
+
+from async_cosyvoice.config import OVERWRITE_NORMALIZER_CACHE
 
 try:
     import ttsfrd
@@ -38,6 +42,104 @@ except ImportError:
 from cosyvoice.utils.file_utils import logging
 from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
 
+
+class AsyncTextGeneratorWrapper:
+    def __init__(self, obj):
+        self.obj = obj
+        self.is_async_generator = isinstance(obj, AsyncGenerator)
+        self.str_num = 0
+        self.min_str_num = 60
+        self.split_threshold = 60
+        self.buffer = ""  # 用于存储未发送的文本
+        self.finished = False
+        self._len = 1
+
+    def __len__(self):
+        return self._len
+
+    def _find_split_point(self, text, max_split_len=None):
+        if max_split_len is None:
+            max_split_len = self.split_threshold
+        """在文本中找到合适的分割点"""
+        split_chars = {'。', '！', '？', '.', '!', '?', '，', '、', '；', ';', ','}
+        for i, t in enumerate(text):
+            if t in split_chars:
+                return i
+            elif i >= max_split_len:
+                # 如果超过最大分割长度，则返回当前位置，强制分隔
+                return i
+        return -1
+
+    async def _async_generator(self):
+        """异步生成器，处理文本分块"""
+        self.str_num = 0
+        # 发送缓冲区数据
+        if self.buffer:
+            if len(self.buffer) >= self.min_str_num:
+                yield self.buffer[:self.min_str_num]
+                self.str_num = self.min_str_num
+                self.buffer = self.buffer[self.min_str_num:]
+                # 在 buffer 中寻找合适的切分点
+                split_pos = self._find_split_point(self.buffer)
+                if split_pos >= 0:
+                    yield self.buffer[:split_pos]
+                    self.buffer = self.buffer[split_pos:]
+                    return
+                else:
+                    yield self.buffer
+                    self.str_num += len(self.buffer)
+                    self.buffer = ""
+            else:
+                yield self.buffer
+                self.str_num = len(self.buffer)
+                self.buffer = ""
+        chunk = ""
+        while True:
+            # 获取新数据
+            next_chunk :str = ""
+            try:
+                if self.is_async_generator:
+                    next_chunk = await self.obj.__anext__()
+                else:
+                    next_chunk = self.obj.__next__()
+            except (StopIteration, StopAsyncIteration):
+                self.finished = True
+            except Exception as e:
+                raise f"Error in AsyncTextGeneratorWrapper: {e}"
+
+            if not self.finished:
+                # 如果新数据长度小于最小长度，则直接返回
+                if (num := self.str_num + len(chunk)) < self.min_str_num:
+                    self.str_num = num
+                    yield chunk
+                # 确保切分后还没有结束传入新的字符，避免出现生成器只生成一个空字符的情况（合成错误音频）
+                # 切分输入，并保存更新 buffer
+                elif split_pos := self._find_split_point(chunk) >= 0:
+                    yield chunk[:split_pos]
+                    self.buffer = chunk[split_pos:] + next_chunk
+                    return
+                # 如果长度超过最小长度+阈值，则强制进行切分
+                elif num > self.min_str_num + self.split_threshold:
+                    index = self.min_str_num + self.split_threshold - self.str_num
+                    yield chunk[:index]
+                    self.buffer = chunk[index:] + next_chunk
+                    return
+                else:
+                    self.str_num = num
+                    yield chunk
+
+                chunk = next_chunk
+            else:
+                # 如果已经结束，则直接返回剩余的 buffer
+                yield self.buffer + chunk
+                return
+
+    def __iter__(self):
+        """同步生成器"""
+        while not self.finished:
+            # 返回异步生成器
+            yield self._async_generator()
+            # self._len += 1
 
 class SpeakerInfo(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -111,7 +213,7 @@ class CosyVoiceFrontEnd:
             self.frd.set_lang_type('pinyinvg')
         else:
             # self.zh_tn_model = ZhNormalizer(remove_erhua=False, full_to_half=False, overwrite_cache=True)
-            self.zh_tn_model = ZhNormalizer(remove_erhua=False, full_to_half=False, overwrite_cache=False)
+            self.zh_tn_model = ZhNormalizer(remove_erhua=False, full_to_half=False, overwrite_cache=OVERWRITE_NORMALIZER_CACHE)
             self.en_tn_model = EnNormalizer()
             self.inflect_parser = inflect.engine()
 
@@ -120,7 +222,7 @@ class CosyVoiceFrontEnd:
             logging.info('get tts_text generator, will return _extract_text_token_generator!')
             # NOTE add a dummy text_token_len for compatibility
             return self._extract_text_token_generator(text), torch.tensor([0], dtype=torch.int32)
-        elif isinstance(text, AsyncGenerator):
+        elif isinstance(text, Union[AsyncGenerator, AsyncTextGeneratorWrapper]):
             logging.info('get tts_text async generator, will return _async_extract_text_token_generator!')
             # NOTE add a dummy text_token_len for compatibility
             return self._async_extract_text_token_generator(text), torch.tensor([0], dtype=torch.int32)
@@ -174,9 +276,11 @@ class CosyVoiceFrontEnd:
     def text_normalize(self, text, split=True, text_frontend=True):
         if isinstance(text, Union[Generator, AsyncGenerator]):
             logging.info('get tts_text generator, will skip text_normalize!')
-            return [text]
+            return AsyncTextGeneratorWrapper(text)
+
         if text_frontend is False:
             return [text] if split is True else text
+
         text = text.strip()
         if self.use_ttsfrd:
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]

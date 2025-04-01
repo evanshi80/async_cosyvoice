@@ -3,26 +3,25 @@
 # Async CosyVoice
 </div>
 
-## 项目说明
+## 项目概述
+Async CosyVoice 项目用于加速 cosyvoice2 的推理过程，当前仅支持 Linux 系统，并且依赖 vllm 库。以下是该项目的主要特性：
+1. **LLM 推理加速**：借助 vllm 对 LLM 部分的推理进行加速。
+2. **Flow 推理情况**：Flow 部分的推理采用官方的 `load_jit` 或 `load_trt` 模式，并使用[hexisyztem](https://github.com/hexisyztem)提供的多estimator实例加速。
+3. **加速表现**：
+   - 单任务推理的 RTF 从原来的 0.25 - 0.30，经过 vllm 加速后可达到 0.1 - 0.15。
+   - 单任务流式推理场景下，首包延迟约在 150 - 250ms 之间。
+   - 并发推理时，在rtf<1的前提下，4070能够支持 20 个非流式并发，或者 10 个流式并发。
 
-该项目是为了加速cosyvoice2的推理，仅支持linux系统，依赖vllm。
-1. **使用vllm加速llm部分的推理**
-2. flow部分的推理**未优化**，无法直接批处理，建议使用官方的 load_jit load_trt 模式
-3. 单任务流式情况下，首包延迟在250-350ms左右，但耗时较非流式有所增加
-4. grpc-async服务端
-
----
-### 环境准备(使用python=3.10.16)
+## 环境准备
+请使用 Python 3.10.16 版本，按以下步骤创建并激活 Conda 环境：
 ```bash
 conda create -n cosyvoice2 python=3.10.16 -y
 conda activate cosyvoice2
 ```
 
----
-### 使用方式
-
-1. 先clone cosyvoice项目
-````
+## 使用步骤
+### 1. 克隆 CosyVoice 项目
+```bash
 git clone https://github.com/FunAudioLLM/CosyVoice.git
 cd CosyVoice
 git submodule update --init --recursive
@@ -31,31 +30,32 @@ git submodule update --init --recursive
 conda install -y -c conda-forge pynini==2.1.5
 sudo apt-get update
 sudo apt-get install sox libsox-dev -y
-````
+```
 
-2. 在cosyvoice项目路径下再clone本项目，或添加本项目为子模块
+### 2. 克隆本项目
+在 CosyVoice 项目路径下，克隆本项目：
 ```bash
 git clone https://github.com/qi-hua/async_cosyvoice.git
 ```
 
-3. 在async_cosyvoice目录下安装所有依赖
+### 3. 安装依赖
+进入 `async_cosyvoice` 目录，安装所有依赖（不用再安装原CosyVoice项目依赖）：
 ```bash
 cd async_cosyvoice
 pip install -r requirements.txt
 ```
 
-4. 下载CosyVoice2-0.5B模型文件 
+### 4. 下载模型文件
+从 [这里](https://www.modelscope.cn/models/iic/CosyVoice2-0.5B/) 下载 CosyVoice2 - 0.5B 模型文件，并将其保存至 `CosyVoice/pretrained_models` 目录。
 
-    - 下载地址：https://www.modelscope.cn/models/iic/CosyVoice2-0.5B/
-    - 保存位置为：CosyVoice/pretrained_models
-    - 如手动下载则不用下载CosyVoice-BlankEN文件夹下的文件，已经将其中需要的文件修改并复制到CosyVoice2-0.5B文件夹下了；
-
-5. 将 async_cosyvoice/CosyVoice2-0.5B 文件夹下的文件复制到下载的CosyVoice2-0.5B模型文件夹下
+### 5. 复制文件
+将 `async_cosyvoice/CosyVoice2 - 0.5B` 文件夹下的文件复制到下载的 CosyVoice2 - 0.5B 模型文件夹中：
 ```bash
 cp async_cosyvoice/CosyVoice2-0.5B/* pretrained_models/CosyVoice2-0.5B/
 ```
 
-6. 在config.py文件中设置vllm的AsyncEngineArgs参数、SamplingParams参数
+### 6. 配置参数
+可在 `config.py` 文件中设置 vllm 的 `AsyncEngineArgs` 参数和 `SamplingParams` 参数，以及 ESTIMATOR_COUNT：
 ```python
 ENGINE_ARGS = {
     # 根据实际情况设置 
@@ -68,61 +68,37 @@ ENGINE_ARGS = {
 SAMPLING_PARAMS = {
     "max_tokens": 2048,
 }
+
+ESTIMATOR_COUNT = 2
 ```
 
-7. 启动grpc服务
+### 7. GRPC 服务使用
+在 `runtime/async_grpc` 目录下，运行以下命令启动 GRPC 服务：
 ```bash
-#1.由 proto 文件生成依赖代码
+# 1. 由 proto 文件生成依赖代码
 cd runtime/async_grpc
 python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. cosyvoice.proto
-python server.py
+python server.py --load_jit --load_trt --fp16
 ```
-
-8. 测试grpc服务
+测试 GRPC 服务
 ```bash
 python client.py
 ```
 
----
-### 测试效果
-
-- 测试代码: [speed_test.ipynb](speed_test.ipynb)
-- 测试环境: Intel i5-12400 CPU, 48GB RAM, 1x NVIDIA GeForce RTX 4070
-- 运行环境: Ubuntu 24.04.1 LTS, cuda 12.4, python 3.10.16
-- 测试说明: tts_text为中文，使用 **jit 和 trt**
-- 测试结果: 具体数据及过程详见[speed_test.ipynb](speed_test.ipynb)
-  - 进行非流式推理时，运行单任务推理rtf能从原来的0.25-0.30，经过vllm加速后能达到0.1-0.15；
-  - 加速后进行流式推理，首包延迟能在250-350ms之间；
-  - 流式推理会降低速度，建议使用 inference_zero_shot_by_spk_id 的非流式推理；
-  - 并发推理时，建议使用 load_jit 或 load_trt，加快 flow 部分的推理；
-  - 非流式并发能够有效支持20个并发（rtf<1），流式并发仅能支持5个并发；
-
----
-### 说明：
-
-1. 目前使用的 vllm 最新版本，并开启了 VLLM_USE_V1 = '1'
-2. 目前cuda环境是12.4, 部分依赖文件使用的较新版本 vllm==0.7.3 torch==2.5.1 onnxruntime-gpu==1.19.0
-3. 如果使用 load_trt，能有效提升flow模型的推理速度，但显存占用较大(默认启动会占用 4.7G 显存，应该可以设置减少)。
-4. 启动 cosyvoice2 实例后，需要进行**预热**，推理10次以上，加载frontend模型以及 预热trt模型。
-5. 如在其他地方使用，需要参照async_grpc中的server.py设置sys.path，以正确的引用 cosyvoice、async_cosyvoice
-```python
-import os
-import sys
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(f'{ROOT_DIR}/../../..')
-sys.path.append(f'{ROOT_DIR}/../../../third_party/Matcha-TTS')
-```
-6. 第一次运行时，如果使用的WeTextProcessing则先运行下面的代码，生成缓存，以免frontend过滤掉儿化音。代码frontend中overwrite_cache=False避免了后续运行时重复生成。
-```python
-from tn.chinese.normalizer import Normalizer as ZhNormalizer
-zh_tn_model = ZhNormalizer(overwrite_cache=True)
+### 8. FastAPI 服务使用
+在 `runtime/fastapi` 目录下，运行以下命令启动 FastAPI 服务：
+```bash
+cd runtime/fastapi
+python server.py --load_jit --load_trt --fp16
 ```
 
----
-### spk2info说明
+### 9. spk2info 说明
+`spk2info.pt` 文件中保存了 `prompt_text` 及其 token、embedding 数据，可用于 `sft`、`inference_zero_shot_by_spk_id`、`inference_instruct2_by_spk_id`，使用时无需传递参考 `prompt_text` 及音频数据，直接传递 `spk_id` 即可，并可以跳过对参考音频的预处理步骤，直接进入推理步骤。
 
-spk2info.pt文件中保存了 prompt_text及其token、embedding数据，可以用于 sft、inference_zero_shot_by_spk_id、inference_instruct2_by_spk_id，不用传递参考prompt_text、及音频数据，直接传递spk_id即可。
+可通过 `frontend.generate_spk_info` 函数生成新的 `spk2info`，需要传入的参数为：`spk_id: str`、`prompt_text: str`、`prompt_speech_16k: torch.Tensor`、`resample_rate: int = 24000`、`name: str = None`。
 
-通过 frontend.**generate_spk_info** 函数生成新的 spk2info，需要传入的参数为：
 
-spk_id: str, prompt_text: str, prompt_speech_16k: torch.Tensor, resample_rate:int=24000, name: str=None。
+## 注意事项
+1. 本项目使用的是 vllm 最新版本，并开启了 `VLLM_USE_V1 = '1'`。
+2. 当前 CUDA 环境为 12.4，部分依赖文件使用的版本为 `vllm==0.7.3`、`torch==2.5.1`、`onnxruntime-gpu==1.19.0`。
+3. 启动 cosyvoice2 实例后，需要进行 **预热**，即进行 10 次以上的推理任务，预热 trt 模型。
