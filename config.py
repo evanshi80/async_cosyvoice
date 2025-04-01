@@ -3,7 +3,7 @@
 # AsyncEngineArgs
 ENGINE_ARGS = {
     # "enforce_eager": True,
-    "gpu_memory_utilization": 0.4,
+    "gpu_memory_utilization": 0.3,
     "max_num_batched_tokens": 1024,
     "max_model_len": 2048,
     "max_num_seqs": 256,
